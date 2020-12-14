@@ -1,0 +1,292 @@
+from __future__ import print_function
+import keras
+from keras.datasets import mnist
+from keras.datasets import fashion_mnist
+from keras.models import Sequential
+from keras.layers import Dense, Dropout, Flatten
+from keras.layers import Conv2D, MaxPooling2D
+from keras import backend as K
+
+from PIL import Image
+import numpy as np
+import matplotlib.pyplot as plt
+
+import poison_functions as pf
+import image_scattering
+import random
+
+
+#Takes numpy image array, returns array of numpy image arrays
+def get_scattered_images(original_img):
+    #Converts initial image from numpy image array into PIL image
+    #L is for greyscale
+    img = Image.fromarray(original_img[:, :, 0], 'L')
+    split_imgs_2 = image_scattering.scatter2by2(image_scattering.split_in_four(img))
+    split_imgs_3a = image_scattering.scatter3by3a(image_scattering.split_in_nine_a(img))
+    split_imgs_3b = image_scattering.scatter3by3b(image_scattering.split_in_nine_b(img))
+    split_imgs_3c = image_scattering.scatter3by3c(image_scattering.split_in_nine_c(img))
+    split_imgs_3d = image_scattering.scatter3by3d(image_scattering.split_in_nine_d(img))
+    split_imgs_4 = image_scattering.scatter4x4(image_scattering.split_in_16(img))
+    plt.show()
+
+    #Converts images from PIL images into an array of numpy image arrays
+    imgs = np.array([np.asarray(split_imgs_2[0]), np.asarray(split_imgs_2[1]), np.asarray(split_imgs_2[2]), np.asarray(split_imgs_2[3]), np.asarray(split_imgs_2[4]),\
+        np.asarray(split_imgs_3a[0]), np.asarray(split_imgs_3a[1]), np.asarray(split_imgs_3a[2]), np.asarray(split_imgs_3a[3]), np.asarray(split_imgs_3a[4]),\
+        np.asarray(split_imgs_3b[0]), np.asarray(split_imgs_3b[1]), np.asarray(split_imgs_3b[2]), np.asarray(split_imgs_3b[3]), np.asarray(split_imgs_3b[4]),\
+        np.asarray(split_imgs_3c[0]), np.asarray(split_imgs_3c[1]), np.asarray(split_imgs_3c[2]), np.asarray(split_imgs_3c[3]), np.asarray(split_imgs_3c[4]),\
+        np.asarray(split_imgs_3d[0]), np.asarray(split_imgs_3d[1]), np.asarray(split_imgs_3d[2]), np.asarray(split_imgs_3d[3]), np.asarray(split_imgs_3d[4]),\
+        np.asarray(split_imgs_4[0]), np.asarray(split_imgs_4[1]), np.asarray(split_imgs_4[2]), np.asarray(split_imgs_4[3]), np.asarray(split_imgs_4[4])])
+
+    return imgs
+
+#Takes array of ints between 0-9, returns histogram array of initial array
+def get_hist(arr):
+    hist = np.zeros(10)
+    for i in range(0, np.size(arr)):
+        if(arr[i] == 0):
+            hist[0] = hist[0] + 1
+        elif (arr[i] == 1):
+            hist[1] = hist[1] + 1
+        elif (arr[i] == 2):
+            hist[2] = hist[2] + 1
+        elif (arr[i] == 3):
+            hist[3] = hist[3] + 1
+        elif (arr[i] == 4):
+            hist[4] = hist[4] + 1
+        elif (arr[i] == 5):
+            hist[5] = hist[5] + 1
+        elif (arr[i] == 6):
+            hist[6] = hist[6] + 1
+        elif (arr[i] == 7):
+            hist[7] = hist[7] + 1
+        elif (arr[i] == 8):
+            hist[8] = hist[8] + 1
+        elif (arr[i] == 9):
+            hist[9] = hist[9] + 1
+    return hist
+
+#Takes array of predictions
+#reutrns True if image is thought to contain a tag, returns False if thought to be clean
+def is_tagged(predictions, ratio =.65):
+    class_arr = []
+    pred_length = np.size(predictions,0)
+    for i in range(0, pred_length):
+        class_arr.append(np.argmax(predictions[i]))
+    hist = get_hist(class_arr)
+    big_val = -1
+    for i in range(0, np.size(hist)):
+        if (hist[i] > big_val):
+            big_val = hist[i]
+    if(big_val/pred_length > ratio):
+        #print('contains tag')
+        return True
+    else:
+        #print('does not contain tag')
+        return False
+
+#end of functions
+
+#######################################
+#Code for importing MNIST data in preperation for model is borrowed from: https://keras.io/examples/mnist_cnn/
+
+batch_size = 128
+num_classes = 10
+epochs = 3
+
+# input image dimensions
+img_rows, img_cols = 28, 28
+
+# the data, split between train and test sets
+#(x_train, y_train), (x_test, y_test) = mnist.load_data()
+
+(x_train, y_train), (x_test, y_test) = fashion_mnist.load_data()
+
+if K.image_data_format() == 'channels_first':
+    x_train = x_train.reshape(x_train.shape[0], 1, img_rows, img_cols)
+    x_test = x_test.reshape(x_test.shape[0], 1, img_rows, img_cols)
+    input_shape = (1, img_rows, img_cols)
+else:
+    x_train = x_train.reshape(x_train.shape[0], img_rows, img_cols, 1)
+    x_test = x_test.reshape(x_test.shape[0], img_rows, img_cols, 1)
+    input_shape = (img_rows, img_cols, 1)
+
+###########################################
+
+x_train = x_train.copy()
+y_train = y_train.copy()
+x_test = x_test.copy()
+y_test = y_test.copy()
+
+#Copy clean testing labels for later
+y_clean = np.copy(y_test)
+
+
+#Add backdoor tag onto train and test data
+
+train_poison_percent = .005
+test_poison_percent = .05
+
+train_poison_amt = 0
+test_poison_amt = 0
+
+for i in range(0, np.size(x_train, 0)):
+    r = random.random()
+    if(r < train_poison_percent):
+        x_train[i], y_train[i] = pf.rand_poison(x_train[i], poisoned_label= 8)
+        x_train[i] = x_train[i].reshape(1,28,28,1)
+        train_poison_amt += 1
+
+
+for i in range(0, np.size(x_test, 0)):
+    r = random.random()
+    if(r < test_poison_percent):
+        x_test[i], y_test[i]  = pf.rand_poison(x_test[i], poisoned_label= 8)
+        x_test[i] = x_test[i].reshape(1,28,28,1)
+        test_poison_amt +=1
+
+print('training samples poisoned: ', train_poison_amt)
+print('testing samples poisoned: ', test_poison_amt)
+
+
+#Copy and Scatter first test image
+all_scat = get_scattered_images(x_test[0])
+
+group_size = np.size(all_scat, 0)
+print('Each image is scattered into ', group_size, ' new images')
+
+all_scat = all_scat.reshape(group_size, 28, 28, 1)
+np.expand_dims(all_scat, 0)
+
+#Scatter remaining images using batches to lower compute time
+image_amt = np.size(x_test,0)
+image_batches = 8
+image_batch_size = int(image_amt/image_batches)
+print(image_amt)
+print(image_batch_size)
+for b in range(1, image_batches+1):
+    print('image batch: ', b)
+    start = b*image_batch_size - image_batch_size
+    print('start', start)
+    for i in range(start, (start + image_batch_size)):
+        if i == start:
+            batch_scat = get_scattered_images(x_test[i])
+            batch_scat = batch_scat.reshape(group_size, 28, 28, 1)
+        else:
+            scat = get_scattered_images(x_test[i])
+            scat = scat.reshape(group_size, 28, 28, 1)
+            batch_scat = np.append(batch_scat, scat, axis = 0)
+        if(i % 200 == 0):
+            print((100*i/np.size(x_test,0)), '% of images scattered')
+    if b == 1:
+        all_scat = batch_scat
+    else:
+        all_scat = np.append(all_scat, batch_scat, axis = 0)
+    print('batch:',np.shape(batch_scat))
+    del batch_scat
+    print('all',np.shape(all_scat))
+
+print('Array of all scattered Images: ', np.shape(all_scat))
+
+all_scat = all_scat.astype('float32')
+all_scat /= 255
+
+######################################3333
+#Code for CNN borrowed from: https://keras.io/examples/mnist_cnn/
+
+x_train = x_train.astype('float32')
+x_test = x_test.astype('float32')
+x_train /= 255
+x_test /= 255
+print('x_train shape:', x_train.shape)
+print(x_train.shape[0], 'train samples')
+print(x_test.shape[0], 'test samples')
+
+# convert class vectors to binary class matrices
+y_train = keras.utils.to_categorical(y_train, num_classes)
+y_test = keras.utils.to_categorical(y_test, num_classes)
+
+model = Sequential()
+model.add(Conv2D(32, kernel_size=(3, 3),
+                 activation='relu',
+                 input_shape=input_shape))
+model.add(Conv2D(64, (3, 3), activation='relu'))
+model.add(MaxPooling2D(pool_size=(2, 2)))
+model.add(Dropout(0.25))
+model.add(Flatten())
+model.add(Dense(128, activation='relu'))
+model.add(Dropout(0.5))
+model.add(Dense(num_classes, activation='softmax'))
+
+model.compile(loss=keras.losses.categorical_crossentropy,
+              optimizer=keras.optimizers.Adadelta(),
+              metrics=['accuracy'])
+
+model.fit(x_train, y_train,
+          batch_size=batch_size,
+          epochs=epochs,
+          verbose=1,
+          validation_data=(x_test, y_test))
+
+####################################################
+#Model is finished training
+
+#identifying tagged images and storing values for accuracy purposes
+
+num_tagged = 0
+true_pos = 0
+false_pos = 0
+true_neg = 0
+false_neg = 0
+
+num_scattered = np.size(x_test,0)
+print(num_scattered)
+for i in range(0, num_scattered):
+    test_img = i*1
+
+    pred = model.predict(all_scat[(test_img * group_size):(group_size * (1 + test_img) - 1)])
+    t_pred = is_tagged(pred, ratio=.4)
+
+    if(y_clean[i] != np.argmax(y_test[i])):
+        tagged = True
+        num_tagged += 1
+    else:
+        tagged = False
+
+    if(t_pred and tagged):
+        true_pos += 1
+    elif(t_pred and (not tagged)):
+        false_pos += 1
+    elif((not t_pred) and tagged):
+        false_neg += 1
+    elif((not t_pred) and (not tagged)):
+        true_neg += 1
+
+    if (i % 100 == 0):
+        print(i, ' / ', num_scattered, ' images checked')
+
+
+#Printing accuracy and error
+
+print('[true positive, false positive, false negative, true negatve]')
+print([true_pos, false_pos, false_neg, true_neg])
+
+print('Accuracy (TP+TN/total): ', ((true_pos + true_neg)/num_scattered))
+print('Recall (TP/(FN+TP)): ', (true_pos/(false_neg+true_pos)))
+#Recall: How many relevant items were selected
+print('False Positive Rate (FP/(FP+TN)): ', (false_pos/(false_pos+true_neg)))
+print('Percision (TP/(TP+FP)): ', (true_pos/(true_pos+false_pos)))
+#Percision: How many selected items are relevant
+
+print('% of clean images incorrectly marked as tagged: ', (false_pos/(num_scattered-num_tagged)))
+
+print(true_pos, ' images were correctly identified as tagged out of ', num_tagged, ' tagged images')
+print(true_pos, '/', num_tagged, ' = ', (true_pos/num_tagged))
+
+print(true_neg, ' images were correctly identified as not tagged out of ', (num_scattered - num_tagged), ' untagged images')
+print(true_neg, '/', (num_scattered - num_tagged), ' = ', (true_neg/(num_scattered - num_tagged)))
+
+print(false_pos, ' images were said to be tagged but were not out of', num_tagged, ' tagged images')
+print(false_pos, '/', num_tagged, ' = ', (false_pos/num_tagged))
+
+
+
